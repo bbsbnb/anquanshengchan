@@ -38,6 +38,20 @@ function hazardView(row) {
   };
 }
 
+function hazardForProject(db, hazardId, projectId) {
+  return db.prepare(`SELECT h.* FROM hazards h
+    JOIN inspections i ON i.id=h.inspection_id
+    WHERE h.id=? AND i.project_id=?`).get(hazardId, projectId);
+}
+
+function entityBelongsToProject(db, entityType, entityId, projectId) {
+  if (entityType === "inspection") {
+    return Boolean(db.prepare("SELECT id FROM inspections WHERE id=? AND project_id=?").get(entityId, projectId));
+  }
+  if (entityType === "hazard") return Boolean(hazardForProject(db, entityId, projectId));
+  return false;
+}
+
 function nextNumber(db, prefix, table) {
   const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const count = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE created_at LIKE ?`).get(`${new Date().toISOString().slice(0, 10)}%`).count;
@@ -58,20 +72,36 @@ export function createApp({ dbPath } = {}) {
     const id = Number(req.header("x-user-id") || 2);
     req.user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
     if (!req.user) return res.status(401).json({ error: "无效用户" });
+    const projectId = Number(req.header("x-project-id") || 1);
+    req.project = db.prepare("SELECT * FROM projects WHERE id = ?").get(projectId);
+    if (!req.project) req.project = db.prepare("SELECT * FROM projects ORDER BY id LIMIT 1").get();
     next();
   });
 
   app.get("/api/bootstrap", (req, res) => {
     res.json({
       users: db.prepare("SELECT * FROM users ORDER BY id").all(),
-      project: db.prepare("SELECT * FROM projects WHERE id = 1").get(),
+      projects: db.prepare("SELECT * FROM projects ORDER BY id").all(),
+      project: req.project,
       currentUser: req.user,
     });
   });
 
+  app.post("/api/projects", requireRole("admin"), (req, res) => {
+    const name = String(req.body.name || "").trim();
+    const code = String(req.body.code || "").trim();
+    const location = String(req.body.location || "").trim();
+    if (!name || !code || !location) return res.status(400).json({ error: "项目名称、项目编号和项目地点不能为空" });
+    if (db.prepare("SELECT id FROM projects WHERE code=?").get(code)) return res.status(409).json({ error: "项目编号已存在" });
+    const result = db.prepare("INSERT INTO projects(name,code,location) VALUES (?,?,?)").run(name, code, location);
+    const created = db.prepare("SELECT * FROM projects WHERE id=?").get(result.lastInsertRowid);
+    audit(db, { entityType: "project", entityId: created.id, action: "新建项目", actorId: req.user.id, after: created });
+    res.status(201).json(created);
+  });
+
   app.get("/api/dashboard", (req, res) => {
-    const hazards = db.prepare("SELECT * FROM hazards").all().map(hazardView);
-    const inspections = db.prepare("SELECT * FROM inspections").all();
+    const hazards = db.prepare(`SELECT h.* FROM hazards h JOIN inspections i ON i.id=h.inspection_id WHERE i.project_id=?`).all(req.project.id).map(hazardView);
+    const inspections = db.prepare("SELECT * FROM inspections WHERE project_id=?").all(req.project.id);
     const byStatus = Object.fromEntries(Object.entries(statusLabels).map(([key, label]) => [label, hazards.filter((h) => h.status === key).length]));
     const byLevel = hazards.reduce((acc, h) => { const key = h.confirmed_level || h.suggested_level; acc[key] = (acc[key] || 0) + 1; return acc; }, {});
     const byDepartment = hazards.reduce((acc, h) => { acc[h.department] = (acc[h.department] || 0) + 1; return acc; }, {});
@@ -86,7 +116,7 @@ export function createApp({ dbPath } = {}) {
         closureRate: hazards.length ? Math.round((closed / hazards.length) * 100) : 0,
       },
       byStatus, byLevel, byDepartment,
-      recent: db.prepare(`SELECT i.*,u.name AS creator_name FROM inspections i JOIN users u ON u.id=i.creator_id ORDER BY i.updated_at DESC LIMIT 5`).all(),
+      recent: db.prepare(`SELECT i.*,u.name AS creator_name FROM inspections i JOIN users u ON u.id=i.creator_id WHERE i.project_id=? ORDER BY i.updated_at DESC LIMIT 5`).all(req.project.id),
     });
   });
 
@@ -154,12 +184,12 @@ export function createApp({ dbPath } = {}) {
   app.get("/api/inspections", (req, res) => {
     const rows = db.prepare(`SELECT i.*,u.name AS creator_name,rv.name AS reviewer_name,
       (SELECT COUNT(*) FROM hazards h WHERE h.inspection_id=i.id) AS hazard_count
-      FROM inspections i JOIN users u ON u.id=i.creator_id LEFT JOIN users rv ON rv.id=i.reviewer_id ORDER BY i.updated_at DESC`).all();
+      FROM inspections i JOIN users u ON u.id=i.creator_id LEFT JOIN users rv ON rv.id=i.reviewer_id WHERE i.project_id=? ORDER BY i.updated_at DESC`).all(req.project.id);
     res.json(rows.map((row) => ({ ...row, missing_fields: json(row.missing_fields) })));
   });
 
   app.get("/api/inspections/:id", (req, res) => {
-    const view = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ?").get(req.params.id), db);
+    const view = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ? AND project_id=?").get(req.params.id, req.project.id), db);
     if (!view) return res.status(404).json({ error: "检查记录不存在" });
     res.json(view);
   });
@@ -170,7 +200,7 @@ export function createApp({ dbPath } = {}) {
     const missing = validateInspection(input);
     const recordNo = nextNumber(db, "JC", "inspections");
     const result = db.prepare(`INSERT INTO inspections(record_no,project_id,type,inspection_date,location,participants,basis_ids,facts,status,version,missing_fields,conflicts,creator_id,created_at,updated_at)
-      VALUES (?,1,?,?,?,?,?,?, 'draft',1,?,?,?, ?,?)`).run(recordNo, input.type || "日常检查", input.inspection_date || "", input.location || "", input.participants || "", JSON.stringify(input.basis_ids || []), input.facts || "", JSON.stringify(missing), JSON.stringify(input.conflicts || []), req.user.id, now, now);
+      VALUES (?,?,?,?,?,?,?,?, 'draft',1,?,?,?, ?,?)`).run(recordNo, req.project.id, input.type || "日常检查", input.inspection_date || "", input.location || "", input.participants || "", JSON.stringify(input.basis_ids || []), input.facts || "", JSON.stringify(missing), JSON.stringify(input.conflicts || []), req.user.id, now, now);
     const inspectionId = Number(result.lastInsertRowid);
     const inspection = db.prepare("SELECT * FROM inspections WHERE id = ?").get(inspectionId);
     for (const raw of input.hazards || []) {
@@ -186,7 +216,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.patch("/api/inspections/:id", requireRole("officer"), (req, res) => {
-    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ?").get(req.params.id), db);
+    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ? AND project_id=?").get(req.params.id, req.project.id), db);
     if (!before) return res.status(404).json({ error: "检查记录不存在" });
     if (!['draft','returned'].includes(before.status)) return res.status(409).json({ error: "当前状态不可编辑；已批准记录修订需创建新版本" });
     const input = { ...before, ...req.body };
@@ -199,7 +229,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.post("/api/inspections/:id/submit", requireRole("officer"), (req, res) => {
-    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ?").get(req.params.id), db);
+    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ? AND project_id=?").get(req.params.id, req.project.id), db);
     if (!before) return res.status(404).json({ error: "检查记录不存在" });
     if (!['draft','returned'].includes(before.status)) return res.status(409).json({ error: "当前记录不可送审" });
     const blockers = [...before.missing_fields, ...before.conflicts];
@@ -218,7 +248,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.post("/api/inspections/:id/review", requireRole("reviewer"), (req, res) => {
-    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ?").get(req.params.id), db);
+    const before = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ? AND project_id=?").get(req.params.id, req.project.id), db);
     if (!before) return res.status(404).json({ error: "检查记录不存在" });
     if (before.status !== "review") return res.status(409).json({ error: "记录不在待审核状态" });
     const approve = req.body.decision === "approve";
@@ -231,7 +261,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.post("/api/inspections/:id/revise", requireRole("officer"), (req, res) => {
-    const source = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ?").get(req.params.id), db);
+    const source = inspectionView(db.prepare("SELECT * FROM inspections WHERE id = ? AND project_id=?").get(req.params.id, req.project.id), db);
     if (!source || source.status !== "approved") return res.status(409).json({ error: "仅已批准记录可以创建修订版" });
     const now = new Date().toISOString();
     const result = db.prepare(`INSERT INTO inspections(record_no,project_id,type,inspection_date,location,participants,basis_ids,facts,status,version,missing_fields,conflicts,creator_id,created_at,updated_at)
@@ -244,6 +274,7 @@ export function createApp({ dbPath } = {}) {
   app.get("/api/attachments", (req, res) => {
     const { entityType, entityId } = req.query;
     if (!entityType || !entityId) return res.status(400).json({ error: "缺少附件归属信息" });
+    if (!entityBelongsToProject(db, entityType, Number(entityId), req.project.id)) return res.status(404).json({ error: "附件归属记录不存在" });
     res.json(db.prepare(`SELECT a.*,u.name AS uploader_name FROM attachments a JOIN users u ON u.id=a.uploaded_by
       WHERE a.entity_type=? AND a.entity_id=? ORDER BY a.created_at DESC`).all(entityType, Number(entityId)));
   });
@@ -251,7 +282,14 @@ export function createApp({ dbPath } = {}) {
   app.post("/api/attachments", requireRole("officer"), upload.single("file"), (req, res) => {
     if (!req.file) return res.status(400).json({ error: "未选择文件" });
     const { entityType, entityId } = req.body;
-    if (!entityType || !entityId) return res.status(400).json({ error: "缺少附件归属信息" });
+    if (!entityType || !entityId) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(400).json({ error: "缺少附件归属信息" });
+    }
+    if (!entityBelongsToProject(db, entityType, Number(entityId), req.project.id)) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(404).json({ error: "附件归属记录不存在" });
+    }
     const now = new Date().toISOString();
     const fileName = Buffer.from(req.file.originalname, "latin1").toString("utf8");
     const result = db.prepare(`INSERT INTO attachments(entity_type,entity_id,file_name,stored_name,mime_type,size,uploaded_by,created_at) VALUES (?,?,?,?,?,?,?,?)`)
@@ -262,12 +300,12 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.get("/api/hazards", (req, res) => {
-    const rows = db.prepare(`SELECT h.*,i.record_no,i.inspection_date FROM hazards h JOIN inspections i ON i.id=h.inspection_id ORDER BY h.updated_at DESC`).all();
+    const rows = db.prepare(`SELECT h.*,i.record_no,i.inspection_date FROM hazards h JOIN inspections i ON i.id=h.inspection_id WHERE i.project_id=? ORDER BY h.updated_at DESC`).all(req.project.id);
     res.json(rows.map(hazardView));
   });
 
   app.patch("/api/hazards/:id", requireRole("officer"), (req, res) => {
-    const before = hazardView(db.prepare("SELECT * FROM hazards WHERE id=?").get(req.params.id));
+    const before = hazardView(hazardForProject(db, req.params.id, req.project.id));
     if (!before) return res.status(404).json({ error: "隐患不存在" });
     if (before.status === "closed") return res.status(409).json({ error: "已关闭隐患不可修改" });
     const allowed = ["confirmed_level", "measure", "department", "owner", "due_date", "rectification_note"];
@@ -282,7 +320,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.post("/api/hazards/:id/submit-recheck", requireRole("officer"), (req, res) => {
-    const before = hazardView(db.prepare("SELECT * FROM hazards WHERE id=?").get(req.params.id));
+    const before = hazardView(hazardForProject(db, req.params.id, req.project.id));
     if (!before) return res.status(404).json({ error: "隐患不存在" });
     if (!["pending", "rectifying"].includes(before.status)) return res.status(409).json({ error: "当前状态不可提交复查" });
     const note = String(req.body.rectificationNote || before.rectification_note || "").trim();
@@ -296,7 +334,7 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.post("/api/hazards/:id/review", requireRole("reviewer"), (req, res) => {
-    const before = hazardView(db.prepare("SELECT * FROM hazards WHERE id=?").get(req.params.id));
+    const before = hazardView(hazardForProject(db, req.params.id, req.project.id));
     if (!before) return res.status(404).json({ error: "隐患不存在" });
     if (before.status !== "recheck") return res.status(409).json({ error: "隐患不在待复查状态" });
     const pass = req.body.decision === "close";
@@ -310,20 +348,26 @@ export function createApp({ dbPath } = {}) {
   });
 
   app.get("/api/audit", (req, res) => {
-    const rows = db.prepare(`SELECT a.*,u.name AS actor_name,u.role AS actor_role FROM audit_logs a JOIN users u ON u.id=a.actor_id ORDER BY a.created_at DESC LIMIT 200`).all();
+    const rows = db.prepare(`SELECT a.*,u.name AS actor_name,u.role AS actor_role
+      FROM audit_logs a JOIN users u ON u.id=a.actor_id
+      WHERE a.entity_type IN ('rule','knowledge_document')
+        OR (a.entity_type='project' AND a.entity_id=?)
+        OR (a.entity_type='ledger' AND a.entity_id=?)
+        OR (a.entity_type='inspection' AND EXISTS (SELECT 1 FROM inspections i WHERE i.id=a.entity_id AND i.project_id=?))
+        OR (a.entity_type='hazard' AND EXISTS (SELECT 1 FROM hazards h JOIN inspections i ON i.id=h.inspection_id WHERE h.id=a.entity_id AND i.project_id=?))
+      ORDER BY a.created_at DESC LIMIT 200`).all(req.project.id, req.project.id, req.project.id, req.project.id);
     res.json(rows.map((r) => ({ ...r, before: json(r.before_json, null), after: json(r.after_json, null) })));
   });
 
   app.get("/api/inspections/:id/export", async (req, res, next) => {
     try {
-      const inspection = db.prepare("SELECT * FROM inspections WHERE id=?").get(req.params.id);
+      const inspection = db.prepare("SELECT * FROM inspections WHERE id=? AND project_id=?").get(req.params.id, req.project.id);
       if (!inspection) return res.status(404).json({ error: "检查记录不存在" });
       if (inspection.status !== "approved") return res.status(409).json({ error: "只有已批准记录可以导出正式 Word" });
-      const project = db.prepare("SELECT * FROM projects WHERE id=?").get(inspection.project_id);
       const hazards = db.prepare("SELECT * FROM hazards WHERE inspection_id=?").all(inspection.id);
       const creator = db.prepare("SELECT * FROM users WHERE id=?").get(inspection.creator_id);
       const reviewer = db.prepare("SELECT * FROM users WHERE id=?").get(inspection.reviewer_id);
-      const file = await createInspectionDoc({ inspection, project, hazards, creator, reviewer });
+      const file = await createInspectionDoc({ inspection, project: req.project, hazards, creator, reviewer });
       audit(db, { entityType: "inspection", entityId: inspection.id, action: "导出正式 Word", actorId: req.user.id, after: { fileName: file.fileName } });
       res.download(file.filePath, file.fileName);
     } catch (error) { next(error); }
@@ -331,18 +375,17 @@ export function createApp({ dbPath } = {}) {
 
   app.get("/api/hazards/export", async (req, res, next) => {
     try {
-      const project = db.prepare("SELECT * FROM projects WHERE id=1").get();
       const hasSelection = typeof req.query.ids === "string";
       const selectedIds = hasSelection ? req.query.ids.split(",").map(Number).filter((id) => Number.isInteger(id) && id > 0) : [];
       if (hasSelection && !selectedIds.length) return res.status(400).json({ error: "请至少选择一条隐患" });
-      const where = selectedIds.length ? `WHERE h.id IN (${selectedIds.map(() => "?").join(",")})` : "";
-      const hazards = db.prepare(`SELECT h.*,i.record_no,i.inspection_date FROM hazards h JOIN inspections i ON i.id=h.inspection_id ${where} ORDER BY h.id`).all(...selectedIds).map((row) => {
+      const selection = selectedIds.length ? ` AND h.id IN (${selectedIds.map(() => "?").join(",")})` : "";
+      const hazards = db.prepare(`SELECT h.*,i.record_no,i.inspection_date FROM hazards h JOIN inspections i ON i.id=h.inspection_id WHERE i.project_id=?${selection} ORDER BY h.id`).all(req.project.id, ...selectedIds).map((row) => {
         const view = hazardView(row);
         return { ...view, evidence_text: view.evidence.join("；"), source_text: view.source_refs.join("；") };
       });
       if (selectedIds.length && hazards.length !== selectedIds.length) return res.status(404).json({ error: "部分所选隐患不存在，请刷新后重试" });
-      const file = await createLedgerWorkbook({ hazards, project });
-      audit(db, { entityType: "ledger", entityId: 1, action: selectedIds.length ? "选择导出隐患台账" : "导出隐患台账", actorId: req.user.id, after: { fileName: file.fileName, count: hazards.length, hazardIds: hazards.map((hazard) => hazard.id), hazardCodes: hazards.map((hazard) => hazard.code) } });
+      const file = await createLedgerWorkbook({ hazards, project: req.project });
+      audit(db, { entityType: "ledger", entityId: req.project.id, action: selectedIds.length ? "选择导出隐患台账" : "导出隐患台账", actorId: req.user.id, after: { projectId: req.project.id, fileName: file.fileName, count: hazards.length, hazardIds: hazards.map((hazard) => hazard.id), hazardCodes: hazards.map((hazard) => hazard.code) } });
       res.download(file.filePath, file.fileName);
     } catch (error) { next(error); }
   });

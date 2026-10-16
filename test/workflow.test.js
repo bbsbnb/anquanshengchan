@@ -129,3 +129,32 @@ test("可以选择指定隐患导出台账并记录导出范围", async (t) => {
   assert.equal(exportEntry.after.count, 1);
   assert.deepEqual(exportEntry.after.hazardIds, [selectedId]);
 });
+
+test("新建项目后业务数据按当前项目隔离", async (t) => {
+  const app = setup(t);
+  const createdProject = await request(app).post("/api/projects").set(admin).send({
+    name: "滨江科创中心二期项目",
+    code: "BJ-2026-02",
+    location: "上海市浦东新区",
+  }).expect(201);
+  const projectB = { ...officer, "x-project-id": String(createdProject.body.id) };
+  const createdInspection = await request(app).post("/api/inspections").set(projectB).send(completeInspection()).expect(201);
+  const hazardId = createdInspection.body.hazards[0].id;
+
+  const defaultDashboard = await request(app).get("/api/dashboard").set(officer).expect(200);
+  assert.equal(defaultDashboard.body.totals.inspections, 0);
+  const projectDashboard = await request(app).get("/api/dashboard").set(projectB).expect(200);
+  assert.equal(projectDashboard.body.totals.inspections, 1);
+
+  await request(app).get(`/api/inspections/${createdInspection.body.id}`).set(officer).expect(404);
+  await request(app).patch(`/api/hazards/${hazardId}`).set(officer).send({ owner: "跨项目修改" }).expect(404);
+  await request(app).get(`/api/attachments?entityType=hazard&entityId=${hazardId}`).set(officer).expect(404);
+  await request(app).get(`/api/hazards/export?ids=${hazardId}`).set(officer).expect(404);
+  const defaultAudit = await request(app).get("/api/audit").set(officer).expect(200);
+  assert.equal(defaultAudit.body.some((entry) => entry.entity_type === "inspection" && entry.entity_id === createdInspection.body.id), false);
+
+  const defaultExport = await request(app).get("/api/hazards/export").set(officer).expect(200);
+  assert.match(defaultExport.headers["content-type"], /spreadsheetml/);
+  await request(app).post("/api/projects").set(admin).send({ name: "重复编号项目", code: "BJ-2026-02", location: "上海" }).expect(409);
+  await request(app).post("/api/projects").set(officer).send({ name: "无权限项目", code: "NO-AUTH", location: "上海" }).expect(403);
+});

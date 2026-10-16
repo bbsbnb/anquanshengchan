@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Archive, BookOpen, Check, CheckCircle2, ChevronRight, ClipboardCheck,
-  Clock3, Download, FileCheck2, FilePlus2, Files, LayoutDashboard, ListChecks, Menu,
+  Building2, Clock3, Download, FileCheck2, FilePlus2, Files, LayoutDashboard, ListChecks, Menu,
   Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Upload, UserRound,
   X, XCircle,
 } from "lucide-react";
-import { api, download, setCurrentUser } from "./api.js";
+import { api, download, setCurrentProject, setCurrentUser } from "./api.js";
 
 const navItems = [
   ["dashboard", "总览", LayoutDashboard],
@@ -37,9 +37,11 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast] = useState(null);
   const [mobileNav, setMobileNav] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
 
   async function loadBootstrap() {
     const data = await api("/bootstrap");
+    setCurrentProject(data.project.id);
     setBootstrap(data);
     setUser(data.currentUser);
   }
@@ -64,6 +66,24 @@ function App() {
     notify(`已切换为${roleLabels[next.role]}：${next.name}`);
     refresh();
   }
+  async function changeProject(id) {
+    setCurrentProject(id);
+    try {
+      await loadBootstrap();
+      setPage("dashboard");
+      setHazardFilter("all");
+      refresh();
+    } catch (error) { showError(error); }
+  }
+  async function projectCreated(project) {
+    setCurrentProject(project.id);
+    await loadBootstrap();
+    setCreatingProject(false);
+    setPage("dashboard");
+    setHazardFilter("all");
+    refresh();
+    notify(`项目“${project.name}”已创建`);
+  }
 
   if (!bootstrap || !user) return <div className="splash"><ShieldCheck/><span>安全 Agent 正在启动</span></div>;
   const title = navItems.find(([id]) => id === page)?.[1];
@@ -78,7 +98,7 @@ function App() {
     {mobileNav && <button className="nav-backdrop" onClick={() => setMobileNav(false)}/>}
     <main>
       <header className="topbar">
-        <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><span>{bootstrap.project.name}</span><h1>{title}</h1></div></div>
+        <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><div className="project-switch"><Building2/><select value={bootstrap.project.id} onChange={(event) => changeProject(event.target.value)} aria-label="当前项目">{bootstrap.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{user.role === "admin" && <button className="text-btn project-create" onClick={() => setCreatingProject(true)}><Plus/>新建项目</button>}</div><h1>{title}</h1></div></div>
         <div className="top-actions">
           <button className="icon-btn" onClick={refresh} title="刷新数据"><RefreshCw size={18}/></button>
           <div className="user-switch"><UserRound size={17}/><div><small>{roleLabels[user.role]}</small><select value={user.id} onChange={(event) => changeUser(event.target.value)}>{bootstrap.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
@@ -92,8 +112,24 @@ function App() {
         {page === "audit" && <Audit {...pageProps}/>} 
       </div>
     </main>
+    {creatingProject && <ProjectForm onClose={() => setCreatingProject(false)} onCreated={projectCreated} showError={showError}/>}
     {toast && <div className={`toast ${toast.type}`}><span>{toast.type === "error" ? <XCircle/> : <CheckCircle2/>}</span>{toast.text}<button onClick={() => setToast(null)}><X/></button></div>}
   </div>;
+}
+
+function ProjectForm({ onClose, onCreated, showError }) {
+  const [form, setForm] = useState({ name: "", code: "", location: "" });
+  const [busy, setBusy] = useState(false);
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const created = await api("/projects", { method: "POST", body: JSON.stringify(form) });
+      await onCreated(created);
+    } catch (error) { showError(error); }
+    finally { setBusy(false); }
+  }
+  return <Modal title="新建项目" onClose={onClose}><form className="form-stack" onSubmit={submit}><Field label="项目名称" required><input autoFocus value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如：滨江科创中心二期项目"/></Field><div className="form-grid"><Field label="项目编号" required><input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} placeholder="例如：BJ-2026-02"/></Field><Field label="项目地点" required><input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="项目所在区或详细地址"/></Field></div><div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={busy}><Plus/>{busy ? "创建中" : "创建项目"}</button></div></form></Modal>;
 }
 
 function Dashboard({ refreshKey, showError, navigate }) {
