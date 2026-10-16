@@ -99,6 +99,19 @@ export function createApp({ dbPath } = {}) {
     res.status(201).json(created);
   });
 
+  app.delete("/api/projects/:id", requireRole("admin"), (req, res) => {
+    const project = db.prepare("SELECT * FROM projects WHERE id=?").get(req.params.id);
+    if (!project) return res.status(404).json({ error: "项目不存在" });
+    const projectCount = db.prepare("SELECT COUNT(*) AS count FROM projects").get().count;
+    if (projectCount <= 1) return res.status(409).json({ error: "至少需要保留一个项目" });
+    const inspectionCount = db.prepare("SELECT COUNT(*) AS count FROM inspections WHERE project_id=?").get(project.id).count;
+    if (inspectionCount > 0) return res.status(409).json({ error: "项目已有检查记录，不能删除；请保留作为安全档案" });
+    audit(db, { entityType: "project", entityId: project.id, action: "删除空项目", actorId: req.user.id, before: project, after: { deleted: true } });
+    db.prepare("DELETE FROM projects WHERE id=?").run(project.id);
+    const nextProject = db.prepare("SELECT * FROM projects ORDER BY id LIMIT 1").get();
+    res.json({ deletedId: project.id, nextProject });
+  });
+
   app.get("/api/dashboard", (req, res) => {
     const hazards = db.prepare(`SELECT h.* FROM hazards h JOIN inspections i ON i.id=h.inspection_id WHERE i.project_id=?`).all(req.project.id).map(hazardView);
     const inspections = db.prepare("SELECT * FROM inspections WHERE project_id=?").all(req.project.id);

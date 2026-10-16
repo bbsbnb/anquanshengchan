@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Archive, BookOpen, Check, CheckCircle2, ChevronRight, ClipboardCheck,
   Building2, Clock3, Download, FileCheck2, FilePlus2, Files, LayoutDashboard, ListChecks, Menu,
-  Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Upload, UserRound,
+  Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound,
   X, XCircle,
 } from "lucide-react";
 import { api, download, setCurrentProject, setCurrentUser } from "./api.js";
@@ -38,6 +38,7 @@ function App() {
   const [toast, setToast] = useState(null);
   const [mobileNav, setMobileNav] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
 
   async function loadBootstrap() {
     const data = await api("/bootstrap");
@@ -63,6 +64,7 @@ function App() {
     setCurrentUser(id);
     const next = bootstrap.users.find((item) => item.id === Number(id));
     setUser(next);
+    setDeletingProject(false);
     notify(`已切换为${roleLabels[next.role]}：${next.name}`);
     refresh();
   }
@@ -70,6 +72,8 @@ function App() {
     setCurrentProject(id);
     try {
       await loadBootstrap();
+      setCreatingProject(false);
+      setDeletingProject(false);
       setPage("dashboard");
       setHazardFilter("all");
       refresh();
@@ -83,6 +87,15 @@ function App() {
     setHazardFilter("all");
     refresh();
     notify(`项目“${project.name}”已创建`);
+  }
+  async function projectDeleted(nextProject) {
+    setCurrentProject(nextProject.id);
+    await loadBootstrap();
+    setDeletingProject(false);
+    setPage("dashboard");
+    setHazardFilter("all");
+    refresh();
+    notify("空项目已删除");
   }
 
   if (!bootstrap || !user) return <div className="splash"><ShieldCheck/><span>安全 Agent 正在启动</span></div>;
@@ -98,7 +111,7 @@ function App() {
     {mobileNav && <button className="nav-backdrop" onClick={() => setMobileNav(false)}/>}
     <main>
       <header className="topbar">
-        <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><div className="project-switch"><Building2/><select value={bootstrap.project.id} onChange={(event) => changeProject(event.target.value)} aria-label="当前项目">{bootstrap.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{user.role === "admin" && <button className="text-btn project-create" onClick={() => setCreatingProject(true)}><Plus/>新建项目</button>}</div><h1>{title}</h1></div></div>
+        <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><div className="project-switch"><Building2/><select value={bootstrap.project.id} onChange={(event) => changeProject(event.target.value)} aria-label="当前项目">{bootstrap.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{user.role === "admin" && <button className="text-btn project-create" onClick={() => setCreatingProject(true)}><Plus/>新建项目</button>}{user.role === "admin" && bootstrap.projects.length > 1 && <button className="project-delete" onClick={() => setDeletingProject(true)} title="删除当前项目" aria-label="删除当前项目"><Trash2/></button>}</div><h1>{title}</h1></div></div>
         <div className="top-actions">
           <button className="icon-btn" onClick={refresh} title="刷新数据"><RefreshCw size={18}/></button>
           <div className="user-switch"><UserRound size={17}/><div><small>{roleLabels[user.role]}</small><select value={user.id} onChange={(event) => changeUser(event.target.value)}>{bootstrap.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
@@ -113,8 +126,22 @@ function App() {
       </div>
     </main>
     {creatingProject && <ProjectForm onClose={() => setCreatingProject(false)} onCreated={projectCreated} showError={showError}/>}
+    {deletingProject && <DeleteProjectModal project={bootstrap.project} onClose={() => setDeletingProject(false)} onDeleted={projectDeleted} showError={showError}/>}
     {toast && <div className={`toast ${toast.type}`}><span>{toast.type === "error" ? <XCircle/> : <CheckCircle2/>}</span>{toast.text}<button onClick={() => setToast(null)}><X/></button></div>}
   </div>;
+}
+
+function DeleteProjectModal({ project, onClose, onDeleted, showError }) {
+  const [busy, setBusy] = useState(false);
+  async function remove() {
+    setBusy(true);
+    try {
+      const result = await api(`/projects/${project.id}`, { method: "DELETE" });
+      await onDeleted(result.nextProject);
+    } catch (error) { showError(error); }
+    finally { setBusy(false); }
+  }
+  return <Modal title="删除项目" onClose={onClose}><div className="form-stack"><Notice tone="danger" title="仅可删除空项目">已有检查记录的项目属于安全管理档案，系统将禁止删除。</Notice><div className="project-delete-summary"><strong>{project.name}</strong><span>{project.code} · {project.location}</span></div><div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button type="button" className="danger-button" disabled={busy} onClick={remove}><Trash2/>{busy ? "删除中" : "确认删除"}</button></div></div></Modal>;
 }
 
 function ProjectForm({ onClose, onCreated, showError }) {

@@ -157,4 +157,21 @@ test("新建项目后业务数据按当前项目隔离", async (t) => {
   assert.match(defaultExport.headers["content-type"], /spreadsheetml/);
   await request(app).post("/api/projects").set(admin).send({ name: "重复编号项目", code: "BJ-2026-02", location: "上海" }).expect(409);
   await request(app).post("/api/projects").set(officer).send({ name: "无权限项目", code: "NO-AUTH", location: "上海" }).expect(403);
+  await request(app).delete(`/api/projects/${createdProject.body.id}`).set({ ...admin, "x-project-id": String(createdProject.body.id) }).expect(409);
+});
+
+test("管理员可以删除空项目但不能删除最后一个项目", async (t) => {
+  const app = setup(t);
+  const created = await request(app).post("/api/projects").set(admin).send({
+    name: "待清理空项目",
+    code: "EMPTY-2026-01",
+    location: "上海市",
+  }).expect(201);
+  await request(app).delete(`/api/projects/${created.body.id}`).set(officer).expect(403);
+  const deleted = await request(app).delete(`/api/projects/${created.body.id}`).set({ ...admin, "x-project-id": String(created.body.id) }).expect(200);
+  assert.equal(deleted.body.deletedId, created.body.id);
+  assert.equal(deleted.body.nextProject.id, 1);
+  const bootstrap = await request(app).get("/api/bootstrap").set(admin).expect(200);
+  assert.equal(bootstrap.body.projects.length, 1);
+  await request(app).delete("/api/projects/1").set(admin).expect(409);
 });
