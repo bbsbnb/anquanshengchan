@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/*.db*
+work/uploads/
+outputs/*.docx
+outputs/*.xlsx
+.playwright-cli/
+output/
