@@ -36,6 +36,7 @@ function App() {
   const [user, setUser] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
@@ -55,6 +56,17 @@ function App() {
   }
   function notify(text) { setToast({ type: "success", text }); }
   function refresh() { setRefreshKey((v) => v + 1); }
+  async function refreshAll() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await loadBootstrap();
+      refresh();
+      await new Promise((resolve) => setTimeout(resolve, 450));
+      notify("当前项目数据已刷新");
+    } catch (error) { showError(error); }
+    finally { setRefreshing(false); }
+  }
   function navigate(target, options = {}) {
     if (target === "hazards") setHazardFilter(options.filter || "all");
     setPage(target);
@@ -113,7 +125,7 @@ function App() {
       <header className="topbar">
         <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><div className="project-switch"><Building2/><select value={bootstrap.project.id} onChange={(event) => changeProject(event.target.value)} aria-label="当前项目">{bootstrap.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{user.role === "admin" && <button className="text-btn project-create" onClick={() => setCreatingProject(true)}><Plus/>新建项目</button>}{user.role === "admin" && bootstrap.projects.length > 1 && <button className="project-delete" onClick={() => setDeletingProject(true)} title="删除当前项目" aria-label="删除当前项目"><Trash2/></button>}</div><h1>{title}</h1></div></div>
         <div className="top-actions">
-          <button className="icon-btn" onClick={refresh} title="刷新数据"><RefreshCw size={18}/></button>
+          <button className={`icon-btn ${refreshing ? "refreshing" : ""}`} onClick={refreshAll} disabled={refreshing} title={refreshing ? "正在刷新" : "刷新数据"} aria-label={refreshing ? "正在刷新" : "刷新数据"}><RefreshCw size={18}/></button>
           <div className="user-switch"><UserRound size={17}/><div><small>{roleLabels[user.role]}</small><select value={user.id} onChange={(event) => changeUser(event.target.value)}>{bootstrap.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
         </div>
       </header>
