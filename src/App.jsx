@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle, Archive, BookOpen, Check, CheckCircle2, ChevronRight, ClipboardCheck,
   Building2, Clock3, Download, FileCheck2, FilePlus2, Files, LayoutDashboard, ListChecks, Menu,
-  Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound,
+  Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, Upload, UserRound,
   X, XCircle,
 } from "lucide-react";
 import { api, download, setCurrentProject, setCurrentUser } from "./api.js";
@@ -40,6 +40,7 @@ function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
+  const [editingUsers, setEditingUsers] = useState(false);
 
   async function loadBootstrap() {
     const data = await api("/bootstrap");
@@ -77,6 +78,7 @@ function App() {
     const next = bootstrap.users.find((item) => item.id === Number(id));
     setUser(next);
     setDeletingProject(false);
+    if (next.role !== "admin") setEditingUsers(false);
     notify(`已切换为${roleLabels[next.role]}：${next.name}`);
     refresh();
   }
@@ -86,6 +88,7 @@ function App() {
       await loadBootstrap();
       setCreatingProject(false);
       setDeletingProject(false);
+      setEditingUsers(false);
       setPage("dashboard");
       setHazardFilter("all");
       refresh();
@@ -109,6 +112,12 @@ function App() {
     refresh();
     notify("空项目已删除");
   }
+  async function usersUpdated() {
+    await loadBootstrap();
+    setEditingUsers(false);
+    refresh();
+    notify("人员姓名已更新");
+  }
 
   if (!bootstrap || !user) return <div className="splash"><ShieldCheck/><span>安全 Agent 正在启动</span></div>;
   const title = navItems.find(([id]) => id === page)?.[1];
@@ -126,7 +135,7 @@ function App() {
         <div className="title-wrap"><button className="icon-btn mobile-menu" onClick={() => setMobileNav(true)} title="打开导航"><Menu/></button><div><div className="project-switch"><Building2/><select value={bootstrap.project.id} onChange={(event) => changeProject(event.target.value)} aria-label="当前项目">{bootstrap.projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{user.role === "admin" && <button className="text-btn project-create" onClick={() => setCreatingProject(true)}><Plus/>新建项目</button>}{user.role === "admin" && bootstrap.projects.length > 1 && <button className="project-delete" onClick={() => setDeletingProject(true)} title="删除当前项目" aria-label="删除当前项目"><Trash2/></button>}</div><h1>{title}</h1></div></div>
         <div className="top-actions">
           <button className={`icon-btn ${refreshing ? "refreshing" : ""}`} onClick={refreshAll} disabled={refreshing} title={refreshing ? "正在刷新" : "刷新数据"} aria-label={refreshing ? "正在刷新" : "刷新数据"}><RefreshCw size={18}/></button>
-          <div className="user-switch"><UserRound size={17}/><div><small>{roleLabels[user.role]}</small><select value={user.id} onChange={(event) => changeUser(event.target.value)}>{bootstrap.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div></div>
+          <div className="user-switch"><UserRound size={17}/><div><small>{roleLabels[user.role]}</small><select value={user.id} onChange={(event) => changeUser(event.target.value)}>{bootstrap.users.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>{user.role === "admin" && <button className="user-edit" onClick={() => setEditingUsers(true)} title="修改人员姓名" aria-label="修改人员姓名"><Pencil/></button>}</div>
         </div>
       </header>
       <div className="content">
@@ -139,8 +148,25 @@ function App() {
     </main>
     {creatingProject && <ProjectForm onClose={() => setCreatingProject(false)} onCreated={projectCreated} showError={showError}/>}
     {deletingProject && <DeleteProjectModal project={bootstrap.project} onClose={() => setDeletingProject(false)} onDeleted={projectDeleted} showError={showError}/>}
+    {editingUsers && <UserNamesModal users={bootstrap.users} onClose={() => setEditingUsers(false)} onSaved={usersUpdated} showError={showError}/>}
     {toast && <div className={`toast ${toast.type}`}><span>{toast.type === "error" ? <XCircle/> : <CheckCircle2/>}</span>{toast.text}<button onClick={() => setToast(null)}><X/></button></div>}
   </div>;
+}
+
+function UserNamesModal({ users, onClose, onSaved, showError }) {
+  const [items, setItems] = useState(users.map(({ id, name, role }) => ({ id, name, role })));
+  const [busy, setBusy] = useState(false);
+  function updateName(id, name) { setItems((current) => current.map((item) => item.id === id ? { ...item, name } : item)); }
+  async function submit(event) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api("/users", { method: "PATCH", body: JSON.stringify({ users: items.map(({ id, name }) => ({ id, name })) }) });
+      await onSaved();
+    } catch (error) { showError(error); }
+    finally { setBusy(false); }
+  }
+  return <Modal title="修改人员姓名" onClose={onClose}><form className="form-stack" onSubmit={submit}><Notice title="角色与记录关联保持不变">仅修改人员显示姓名，已有检查、审核和审计记录仍关联原人员身份。</Notice>{items.map((item) => <Field key={item.id} label={`${roleLabels[item.role]}姓名`} required><input value={item.name} maxLength="30" onChange={(event) => updateName(item.id, event.target.value)}/></Field>)}<div className="modal-actions"><button type="button" className="secondary" onClick={onClose}>取消</button><button className="primary" disabled={busy}><Check/>{busy ? "保存中" : "保存姓名"}</button></div></form></Modal>;
 }
 
 function DeleteProjectModal({ project, onClose, onDeleted, showError }) {

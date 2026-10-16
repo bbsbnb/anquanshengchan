@@ -87,6 +87,30 @@ export function createApp({ dbPath } = {}) {
     });
   });
 
+  app.patch("/api/users", requireRole("admin"), (req, res) => {
+    const currentUsers = db.prepare("SELECT * FROM users ORDER BY id").all();
+    const submitted = Array.isArray(req.body.users) ? req.body.users : [];
+    if (submitted.length !== currentUsers.length) return res.status(400).json({ error: "请提交完整的人员姓名列表" });
+    const namesById = new Map(submitted.map((item) => [Number(item.id), String(item.name || "").trim()]));
+    const updates = currentUsers.map((item) => ({ ...item, name: namesById.get(item.id) }));
+    if (updates.some((item) => !item.name || item.name.length > 30)) return res.status(400).json({ error: "人员姓名不能为空且不能超过 30 个字符" });
+    if (new Set(updates.map((item) => item.name)).size !== updates.length) return res.status(409).json({ error: "人员姓名不能重复" });
+    db.exec("BEGIN");
+    try {
+      for (const after of updates) {
+        const before = currentUsers.find((item) => item.id === after.id);
+        if (before.name === after.name) continue;
+        db.prepare("UPDATE users SET name=? WHERE id=?").run(after.name, after.id);
+        audit(db, { entityType: "user", entityId: after.id, action: "修改人员姓名", actorId: req.user.id, before, after });
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+    res.json(db.prepare("SELECT * FROM users ORDER BY id").all());
+  });
+
   app.post("/api/projects", requireRole("admin"), (req, res) => {
     const name = String(req.body.name || "").trim();
     const code = String(req.body.code || "").trim();
@@ -363,7 +387,7 @@ export function createApp({ dbPath } = {}) {
   app.get("/api/audit", (req, res) => {
     const rows = db.prepare(`SELECT a.*,u.name AS actor_name,u.role AS actor_role
       FROM audit_logs a JOIN users u ON u.id=a.actor_id
-      WHERE a.entity_type IN ('rule','knowledge_document')
+      WHERE a.entity_type IN ('rule','knowledge_document','user')
         OR (a.entity_type='project' AND a.entity_id=?)
         OR (a.entity_type='ledger' AND a.entity_id=?)
         OR (a.entity_type='inspection' AND EXISTS (SELECT 1 FROM inspections i WHERE i.id=a.entity_id AND i.project_id=?))

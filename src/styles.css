@@ -58,6 +58,9 @@ main { min-width: 0; }
 .user-switch > svg { color: var(--forest); }
 .user-switch small { display: block; color: var(--muted); font-size: 10px; }
 .user-switch select { padding: 0 20px 0 0; border: 0; background: transparent; font-weight: 700; color: var(--ink); outline: none; }
+.user-edit { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #70808b; }
+.user-edit:hover { color: var(--forest); background: #edf3f1; }
+.user-edit svg { width: 14px; }
 .content { padding: 26px 30px 50px; max-width: 1540px; margin: 0 auto; }
 .page-stack { display: grid; gap: 20px; }
 
@@ -183,7 +186,7 @@ td:first-child, th:first-child { width: 18%; } td:last-child, th:last-child { wi
 
 @media (max-width: 520px) {
   .project-switch select { max-width: 86px; }
-  .user-switch { gap: 0; padding-left: 8px; }
+  .user-switch { gap: 2px; padding-left: 8px; }
   .user-switch > svg { display: none; }
-  .user-switch select { max-width: 70px; }
+  .user-switch select { max-width: 62px; }
 }

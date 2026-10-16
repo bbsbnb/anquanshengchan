@@ -175,3 +175,24 @@ test("管理员可以删除空项目但不能删除最后一个项目", async (t
   assert.equal(bootstrap.body.projects.length, 1);
   await request(app).delete("/api/projects/1").set(admin).expect(409);
 });
+
+test("管理员可以统一修改人员姓名且角色保持不变", async (t) => {
+  const app = setup(t);
+  const users = [
+    { id: 1, name: "林主任" },
+    { id: 2, name: "陈安全" },
+    { id: 3, name: "周负责人" },
+  ];
+  await request(app).patch("/api/users").set(officer).send({ users }).expect(403);
+  const updated = await request(app).patch("/api/users").set(admin).send({ users }).expect(200);
+  assert.deepEqual(updated.body.map(({ id, name, role }) => ({ id, name, role })), [
+    { id: 1, name: "林主任", role: "admin" },
+    { id: 2, name: "陈安全", role: "officer" },
+    { id: 3, name: "周负责人", role: "reviewer" },
+  ]);
+  const bootstrap = await request(app).get("/api/bootstrap").set(admin).expect(200);
+  assert.equal(bootstrap.body.currentUser.name, "林主任");
+  await request(app).patch("/api/users").set(admin).send({ users: users.map((item) => ({ ...item, name: "同名人员" })) }).expect(409);
+  const auditLog = await request(app).get("/api/audit").set(admin).expect(200);
+  assert.equal(auditLog.body.filter((item) => item.action === "修改人员姓名").length, 3);
+});
